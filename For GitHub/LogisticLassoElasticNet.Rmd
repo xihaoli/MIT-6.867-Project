@@ -1,0 +1,283 @@
+---
+title: "logistic lasso and logistic elastic net"
+output: html_notebook
+---
+
+```{r}
+set.seed(1)
+```
+
+
+Load data:
+```{r, cache=TRUE}
+train = read.table('~/Dropbox/6.867project/data/train.txt', header = T)
+X_train = apply(train[,2:20441], 2, as.numeric)
+is.const.genes = apply(data.matrix(X_train), 2, sd)==0
+X_train = X_train[,!is.const.genes]#filter out constant gene expression
+dim(X_train)
+Y_train = as.numeric(train[,20442])
+rm(train)
+test = read.table('~/Dropbox/6.867project/data/test.txt', header = T)
+X_test = apply(test[,2:20441], 2, as.numeric)
+X_test = X_test[,!is.const.genes]
+dim(X_test)
+Y_test = as.numeric(test[,20442])
+rm(test)
+```
+
+## Logistic Lasso
+
+```{r, cache=TRUE}
+library(glmnet, verbose = F)
+library(ROCR, verbose = F)
+library(caret, verbose = F)
+
+tally.coefs = function(coefs, s.genes){
+  if (nrow(s.genes)==0) {
+    s.genes = coefs
+    s.genes$name = as.character(s.genes$name)
+    s.genes$n = 1
+  } else {
+    common = s.genes$name %in% coefs$name 
+    common_in_coefs = coefs$name %in% s.genes$name
+    new = !(coefs$name %in% s.genes$name)
+    s.genes$n[common] = s.genes$n[common] + 1
+    s.genes$coefficient[common] = s.genes$coefficient[common] + coefs$coefficient[common_in_coefs]
+    if (sum(new)>0) {
+      coefs.new = coefs[new,]
+      coefs.new$n = 1
+      coefs.new$name = as.character(coefs.new$name)
+      s.genes = rbind(s.genes, coefs.new) 
+    }
+  }
+  return(s.genes)
+}
+
+compute.performance = function(model, X, Y, plot.auc=FALSE){
+  prob = predict(model,type="response", newx = X, s = 'lambda.min')
+  start = proc.time()
+  pred = prediction(prob, Y)
+  end = proc.time()
+  acc = mean((pred@predictions[[1]]>0.5) == Y)
+  # write.table(prob, '../data/relu_lasso_prob.txt')
+  # calculate probabilities for TPR/FPR for predictions
+  p = performance(pred,"tpr","fpr")
+  auc = performance(pred,"auc")@y.values[[1]] # shows calculated AUC for model
+  
+  if (plot.auc) {
+    plot(cv.m)
+    plot(p,colorize=FALSE, col="black") # plot ROC curve
+    lines(c(0,1),c(0,1),col = "gray", lty = 4 )
+    text(0.8,0.2, paste0('AUC=', round(auc,3), '\nACC=', round(acc,3)))
+  }
+  return(list(acc=acc, auc=auc, start=start, end=end))
+}
+
+
+fit.model = function(X_train, Y_train, X_test, Y_test, ntrials=10, model, plot.auc=FALSE){
+  if (model == 'lasso') {
+    alpha = 1
+  } else if (model == 'elastic.net') {
+    alpha = 0.99
+  }
+  perf = data.frame(matrix(NA, ntrials, 6, dimnames = list(1:ntrials,c('train_acc','train_auc', 'test_acc','test_auc','train_time','test_time'))))
+  s.genes = data.frame()
+  for (i in 1:ntrials) {
+    print(i)
+    cv.m = cv.glmnet(x=X_train, y=Y_train, alpha=alpha, family='binomial')
+    train_start = proc.time()
+    tmp = glmnet(x=X_train, y=Y_train, alpha=alpha, family='binomial', lambda = cv.m$lambda.min)
+    train_end = proc.time()
+    tmp_coeffs = coef(cv.m, s = "lambda.min")
+    coeffs = data.frame(name = tmp_coeffs@Dimnames[[1]][tmp_coeffs@i + 1], coefficient = tmp_coeffs@x)
+    # print(coeffs)
+    s.genes = tally.coefs(coeffs, s.genes)
+    # performance
+    perf.train = compute.performance(cv.m, X_train, Y_train)
+    perf.test = compute.performance(cv.m, X_test, Y_test, plot.auc)
+    perf[i, ] = c(perf.train$acc, perf.train$auc, perf.test$acc, perf.test$auc, train_end[3] - train_start[3], perf.test$end[3] - perf.test$start[3])
+  }
+  s.genes$coefficient = s.genes$coefficient/ntrials
+  return(list(perf=perf, s.genes=s.genes))
+}
+
+set.seed(123)
+ntrials = 10
+lasso = fit.model(X_train, Y_train, X_test, Y_test, ntrials = ntrials, model = 'lasso', plot.auc=FALSE)
+
+lasso$s.genes
+lasso$perf
+```
+
+## Logistic elastic net
+
+same function as before, but need to choose two penalty parameters $\lambda$ and $\alpha$. Use the same cross validation method as for Lasso to select $\lambda$. As for $\alpha$, since the ridge penalty term does not have sparsity property, we hope to apply a small ridge penalty ($\alpha$ close to 1) such that the selection of features can be stablized.
+
+```{r, cache=TRUE}
+set.seed(123)
+ntrials = 10
+en = fit.model(X_train, Y_train, X_test, Y_test, ntrials = ntrials, model = 'elastic.net', plot.auc=FALSE)
+en$s.genes
+en$perf
+```
+
+## Compare Lasso and elastic net coefficients:
+```{r}
+s.genes = merge(en$s.genes, lasso$s.genes, by.x = 1, by.y = 1, all = T)
+colnames(s.genes) = c('name', 'en_coef', 'en', 'lasso_coef', 'lasso')
+s.genes = s.genes[order(abs(s.genes$en_coef), decreasing = TRUE),]
+s.genes = s.genes[order(abs(s.genes$lasso_coef), decreasing = TRUE),]
+s.genes[s.genes$en>5 & s.genes$lasso>5,]
+# write.csv(s.genes, file='~/Dropbox/6.867project/data/selected_lass_en.csv')
+# write.table(t(colnames(X_test)), quote = FALSE, sep = '\n',
+            # row.names = FALSE, col.names = FALSE, file='~/Dropbox/6.867project/data/all_genes.txt')
+```
+
+```{r}
+hist(s.genes$lasso, ylim = c(0,0.5), probability = TRUE, main = 'Features Selected by Lasso', xlab = 'Number of times selected')
+```
+
+
+
+## PCA + Lasso
+```{r}
+pc = read.csv('~/Dropbox/6.867project/data/pca_train.csv', header = T)
+pc = data.matrix(pc)
+pc_test = read.csv('~/Dropbox/6.867project/data/pca_test.csv', header = T)
+pc_test = data.matrix(pc_test)
+```
+
+```{r, cache=TRUE}
+ntrials = 10
+lasso.pc = fit.model(pc, Y_train, pc_test, Y_test, ntrials = ntrials, model = 'lasso', plot.auc=FALSE)
+
+lasso.pc$s.genes
+lasso.pc$perf
+```
+
+## PCA + elastic net
+```{r, cache=TRUE}
+ntrials = 10
+en.pc = fit.model(pc, Y_train, pc_test, Y_test, ntrials = ntrials, model = 'elastic.net', plot.auc=FALSE)
+
+en.pc$s.genes
+en.pc$perf
+```
+
+## Compare PCA + Lasso and PCA + elastic net coefficients:
+```{r}
+s.genes.pc = merge(en.pc$s.genes, lasso.pc$s.genes, by.x = 1, by.y = 1, all = T)
+colnames(s.genes.pc) = c('name', 'en_coef', 'en', 'lasso_coef', 'lasso')
+s.genes.pc
+# write.csv(s.genes, file='~/Dropbox/6.867project/data/selected_lass_en_pc.csv')
+```
+
+
+
+
+## Use features from NN
+```{r}
+train = read.table('~/Dropbox/6.867project/data/nn_intermediate_train.txt', header = F)
+X_nn_train = apply(train[,1:(ncol(train)-1)], 2, as.numeric)
+Y_nn_train = as.numeric(train[,ncol(train)])
+rm(train)
+test = read.table('~/Dropbox/6.867project/data/nn_intermediate_test.txt', header = F)
+X_nn_test = apply(test[,1:(ncol(test)-1)], 2, as.numeric)
+Y_nn_test = as.numeric(test[,ncol(test)])
+rm(test)
+```
+
+```{r, cache=TRUE}
+set.seed(123)
+ntrials = 10
+lasso.nn = fit.model(X_nn_train, Y_nn_train, X_nn_test, Y_nn_test, ntrials = ntrials, model = 'lasso', plot.auc=FALSE)
+
+lasso.nn$s.genes
+lasso.nn$perf
+```
+
+
+
+```{r, cache=TRUE}
+set.seed(123)
+ntrials = 10
+en.nn = fit.model(X_nn_train, Y_nn_train, X_nn_test, Y_nn_test, ntrials = ntrials, model = 'elastic.net', plot.auc=FALSE)
+
+en.nn$s.genes
+en.nn$perf
+```
+
+```{r}
+s.genes.nn = merge(en.nn$s.genes, lasso.nn$s.genes, by.x = 1, by.y = 1, all = T)
+colnames(s.genes.nn) = c('name', 'en_coef', 'en', 'lasso_coef', 'lasso')
+s.genes.nn
+# write.csv(s.genes, file='~/Dropbox/6.867project/data/selected_lass_en_nn.csv')
+```
+## Use ReLU features from nn
+```{r}
+train = read.table('~/Dropbox/6.867project/data/nn_intermediate_relu_train_selected.txt', header = T)
+X_relu_train = apply(train[,1:(ncol(train)-1)], 2, as.numeric)
+Y_relu_train = as.numeric(train[,ncol(train)])
+rm(train)
+test = read.table('~/Dropbox/6.867project/data/nn_intermediate_relu_test_selected.txt', header = T)
+X_relu_test = apply(test[,1:(ncol(test)-1)], 2, as.numeric)
+Y_relu_test = as.numeric(test[,ncol(test)])
+rm(test)
+```
+
+```{r, cache=TRUE}
+set.seed(123)
+ntrials = 10
+lasso.relu = fit.model(X_relu_train, Y_relu_train, X_relu_test, Y_relu_test, ntrials = ntrials, model = 'lasso', plot.auc=FALSE)
+
+lasso.relu$s.genes
+lasso.relu$perf
+```
+
+
+
+```{r, cache=TRUE}
+set.seed(123)
+ntrials = 10
+en.relu = fit.model(X_relu_train, Y_relu_train, X_relu_test, Y_relu_test, ntrials = ntrials, model = 'elastic.net', plot.auc=FALSE)
+
+en.relu$s.genes
+en.relu$perf
+```
+
+```{r}
+s.genes.relu = merge(en.relu$s.genes, lasso.relu$s.genes, by.x = 1, by.y = 1, all = T)
+colnames(s.genes.relu) = c('name', 'en_coef', 'en', 'lasso_coef', 'lasso')
+s.genes.relu
+# write.csv(s.genes.relu, file='~/Dropbox/6.867project/data/selected_lass_en_relu.csv')
+```
+
+```{r}
+#read performance statsitics for NN
+perf.nn = read.table('../data/nn_performance.txt', header = TRUE)
+#filter out unconverged ones
+perf.nn = perf.nn[-which(perf.nn$train_acc<0.8),]
+perf.nn
+```
+
+
+```{r tabulate.all.perf}
+perf = data.frame()
+perf = rbind(perf, apply(lasso$perf, 2, mean))
+perf = rbind(perf, apply(lasso.pc$perf, 2, mean))
+perf = rbind(perf, apply(lasso.nn$perf, 2, mean))
+perf = rbind(perf, apply(lasso.relu$perf, 2, mean))
+perf = rbind(perf, apply(en$perf, 2, mean))
+perf = rbind(perf, apply(en.pc$perf, 2, mean))
+perf = rbind(perf, apply(en.nn$perf, 2, mean))
+perf = rbind(perf, apply(en.relu$perf, 2, mean))
+perf = rbind(perf, apply(perf.nn, 2, mean))
+colnames(perf) = colnames(lasso$perf)
+rownames(perf) = c('lasso','pca+lasso','nn+lasso','nn(relu)+lasso','en','pca+en','nn+en','nn(relu)+en', 'nn')
+## add nn training time to nn based models
+perf$train_time_total = perf$train_time
+perf[c('nn+lasso','nn(relu)+lasso','nn+en','nn(relu)+en'), 'train_time_total'] = perf[c('nn+lasso','nn(relu)+lasso','nn+en','nn(relu)+en'), 'train_time_total'] + perf['nn', 'train_time']
+perf
+# write.csv(file = '../data/perf_summary_lasso_en_nn.csv', perf)
+```
+

@@ -1,0 +1,406 @@
+---
+title: "PCA_HF"
+author: "HelianFENG"
+date: "11/6/2017"
+output: html_document
+---
+MIT 6.867 Breast Cancer Subtyping
+PCA and SVM based code
+
+```{r setup, include=FALSE}
+# MIT ML project PCA regression +PCA SVM
+#read in data
+library(readr)
+library(tidyr)
+library(dplyr)
+library(stats)
+require(ggplot2)
+library(glmnet)
+library(e1071)
+library(ROCR, verbose = F)
+```
+
+## R Markdown
+
+```{r}
+bcr_patient <- read.table("~/Dropbox/6.867project/data/train.txt",sep='\t',header=TRUE)
+bcr_patient<-bcr_patient[,-1]
+bcr_patient_test <- read.table("~/Dropbox/6.867project/data/test.txt",sep='\t',header=TRUE)
+bcr_patient_test<-bcr_patient_test[,-1]
+dim(bcr_patient) # 
+bcr_patient[1:5,1:10]
+bcr_patient[1:5,20442]# Y
+y=bcr_patient$y#outcome vector
+expr <- data.matrix(bcr_patient[,1:20440])
+expr_tmp<-data.matrix(bcr_patient[,1:20440])
+colSd <- function (x, na.rm=FALSE) apply(X=x, MARGIN=2, FUN=sd, na.rm=na.rm)
+
+expr <- expr[,colSd(expr,na.rm = T)>0]#filter out constant gene expression
+dim(expr)
+#expr<-as.matrix(as.numeric(unlist(bcr_patient[,1:20441])))
+#expression matrix
+expr[1:5,1:10]
+#bcr_patient$Row.names
+sum(bcr_patient$y == TRUE) # 169
+
+sum(bcr_patient$y == FALSE) # 160
+####test set
+y_test=bcr_patient_test$y#outcome vector
+expr_test <- data.matrix(bcr_patient_test[,1:20440])
+colSd <- function (x, na.rm=FALSE) apply(X=x, MARGIN=2, FUN=sd, na.rm=na.rm)
+
+expr_test <- expr_test[,colSd(expr_tmp,na.rm = T)>0]#filter out constant gene expression
+dim(expr_test)
+#expr<-as.matrix(as.numeric(unlist(bcr_patient[,1:20441])))
+#expression matrix
+expr_test[1:5,1:10]
+#bcr_patient$Row.names
+sum(bcr_patient_test$y == TRUE) # 77
+sum(bcr_patient_test$y == FALSE) # 87
+
+
+```
+# SVM with LASSO selected feature
+
+```{r}
+lass <- read_csv("~/Dropbox/6.867project/data/selected_lass_en.csv")
+
+expr_lasso <-expr[,colnames(expr)%in%lass$name]
+expr_test_lasso <-expr_test[,colnames(expr)%in%lass$name]
+
+
+
+dat<-as.data.frame(cbind(y,expr_lasso ))
+dat<- dat%>%mutate(y=as.numeric(y))
+
+dat_test<-as.data.frame(cbind(bcr_patient_test$y,expr_test_lasso))
+colnames(dat_test)[1]<-"y"
+dat_test<- dat_test%>%mutate(y=as.numeric(dat_test$y))
+svm_tune <- tune(svm, y ~ ., data = dat,
+                 ranges = list(epsilon = seq(0.1,0.9,0.1), cost = 2^(2:9))
+)
+
+
+system.time(svm(y ~ ., data = dat,epsilon=svm_tune$best.model$epsilon))
+print(svm_tune)
+plot(svm_tune)
+
+best_mod <- svm_tune$best.model
+best_mod_pred <- as.numeric(predict(best_mod, dat)>=0.5 )
+mean(best_mod_pred==y)
+# 0.9817629 accuracy
+svm_test_fit<-predict(best_mod,dat_test)
+mean(ifelse(svm_test_fit>= 0.5,1,0)==y_test)#0.75
+svm.prob = predict(best_mod,dat_test,type="response")
+svm.prob.lasso<-svm.prob
+pred = prediction(svm.prob, bcr_patient_test$y)
+acc = mean((pred@predictions[[1]]>0.5) == bcr_patient_test$y)
+
+perf = performance(pred,"tpr","fpr")
+auc = performance(pred,"auc")@y.values[[1]] # shows calculated AUC for model 0.80
+plot(perf,colorize=FALSE, col="black") # plot ROC curve
+lines(c(0,1),c(0,1),col = "gray", lty = 4 )
+text(0.8,0.2, paste0('AUC=', round(auc,3), '\nACC=', round(acc,3)))
+```
+
+# SVM with Elastic Net selected feature
+
+
+```{r}
+lass<- lass[!is.na(lass$en_coef),]
+expr_lasso <-expr[,colnames(expr)%in%lass$name]
+expr_test_lasso <-expr_test[,colnames(expr)%in%lass$name]
+
+
+
+dat<-as.data.frame(cbind(y,expr_lasso ))
+dat<- dat%>%mutate(y=as.numeric(y))
+
+dat_test<-as.data.frame(cbind(bcr_patient_test$y,expr_test_lasso))
+colnames(dat_test)[1]<-"y"
+dat_test<- dat_test%>%mutate(y=as.numeric(dat_test$y))
+svm_tune <- tune(svm, y ~ ., data = dat,
+                 ranges = list(epsilon = seq(0.1,0.9,0.1), cost = 2^(2:9))
+)
+
+system.time(svm(y ~ ., data = dat,epsilon=svm_tune$best.model$epsilon))
+print(svm_tune)
+plot(svm_tune)
+
+best_mod <- svm_tune$best.model
+best_mod_pred <- as.numeric(predict(best_mod, dat)>=0.5 )
+mean(best_mod_pred==y)
+# 0.9817629 accuracy
+svm_test_fit<-predict(best_mod,dat_test)
+mean(ifelse(svm_test_fit>= 0.5,1,0)==y_test)#0.75
+svm.prob = predict(best_mod,dat_test,type="response")
+svm.prob.en<-svm.prob
+pred = prediction(svm.prob, bcr_patient_test$y)
+acc = mean((pred@predictions[[1]]>0.5) == bcr_patient_test$y)
+
+perf = performance(pred,"tpr","fpr")
+auc = performance(pred,"auc")@y.values[[1]] # shows calculated AUC for model 0.80
+plot(perf,colorize=FALSE, col="black") # plot ROC curve
+lines(c(0,1),c(0,1),col = "gray", lty = 4 )
+text(0.8,0.2, paste0('AUC=', round(auc,3), '\nACC=', round(acc,3)))
+```
+
+#Calculating PCA
+
+```{r}
+system.time(expr.pca <- prcomp(expr,center = T,scale= T))
+
+#saveRDS(expr.pca, file = "~/Dropbox/6.867project/data/pca_train.rds")
+#write.table(as.data.frame(expr.pca$x),"~/Dropbox/6.867project/data/pca_train.csv",sep=",",row.names = F)
+# get test PC
+
+PC_test<-scale(expr_test, expr.pca$center, expr.pca$scale) %*% expr.pca$rotation 
+#write.table(as.data.frame(PC_test),"~/Dropbox/6.867project/data/pca_test.csv",sep=",",row.names = F)
+#saveRDS(PC_test, file = "~/Dropbox/6.867project/data/pca_test.rds")
+#print(expr.pca)
+sum<-summary(expr.pca)
+plot(sum$importance[2,], type = "l")
+sum$importance[,1:50]
+plot(sum$importance[2,1:50], type = "l")
+plot(expr.pca$sdev, type = "l")
+plot(cumsum(sum$importance[2,]), type = "l",ylab = "Cumulative Variance Explained",xlab="PCs",main = "Cumulative Variance Explained VS PC")
+pca<-as.data.frame(expr.pca$x)
+plot(cor(pca,y), type = "l",ylab = "Correlation with outcome",xlab="PCs",main = "Correlation with outcome VS PC")
+sum(abs(cor(pca,y))>0.05)
+sum(abs(cor(pca,y))>0.1)
+ggplot(aes(x=PC1,y=PC2),data=pca)+geom_point(aes(color=as.factor(y)))+ggtitle("First two PC and Outcome")
+sum(abs(cor(pca,y))>0.1|sum$importance[2,]>0.00770)
+pc_sele<-pca[,abs(cor(pca,y))>0.1|sum$importance[2,]>0.00770]
+sum(sum$importance[abs(cor(pca,y))>0.1|sum$importance[2,]>0.00770])/sum(sum$importance)
+
+#write.table(as.data.frame(pc_sele),"~/Dropbox/6.867project/data/pca_select.csv",sep=",",row.names = F)
+PC_test<-PC_test[,abs(cor(pca,y))>0.1|sum$importance[2,]>0.00770]
+#Logistic regression on selected pc
+dat<-as.data.frame(cbind(y,pc_sele))
+dat<- dat%>%mutate(y=as.numeric(y))
+system.time(model_lr <- glm(y ~.,family=binomial(link='logit'),data=dat))
+summary(model_lr)
+mean(ifelse(model_lr$fitted.values >= 0.5,1,0)==y)
+#0.8054711accuracy on training set
+##test set accuracy
+test_predict<-predict.glm(model_lr,as.data.frame(PC_test),type = "response")
+mean(ifelse(test_predict>= 0.5,1,0)==y_test)
+# 0.457
+
+lr.prob = predict.glm(model_lr,as.data.frame(PC_test),type = "response")
+lr.pca.prob<-lr.prob
+pred = prediction(lr.prob, y_test)
+acc = mean((pred@predictions[[1]]>0.5) == y_test)
+
+perf = performance(pred,"tpr","fpr")
+auc = performance(pred,"auc")@y.values[[1]] # shows calculated AUC for model
+plot(perf,colorize=FALSE, col="black") # plot ROC curve
+lines(c(0,1),c(0,1),col = "gray", lty = 4 )
+text(0.8,0.2, paste0('AUC=', round(auc,3), '\nACC=', round(acc,3)))
+```
+
+#svm on all pc with tuning parameter
+
+```{r}
+
+# perform a grid search
+pc_sele_m<-data.matrix(pc_sele)
+
+dat<- dat%>%mutate(y=as.numeric(y))
+svm_tune <- tune(svm, y ~ ., data = dat,
+                 ranges = list(epsilon = seq(0.1,0.9,0.1), cost = 2^(2:9))
+)
+system.time(svm(y ~ ., data = dat,epsilon=svm_tune$best.model$epsilon))
+print(svm_tune)
+plot(svm_tune)
+
+best_mod <- svm_tune$best.model
+best_mod_pred <- as.numeric(predict(best_mod, dat)>=0.5 )
+mean(best_mod_pred==y)
+# 0.9817629 accuracy
+svm_test_fit<-predict(best_mod,PC_test)
+mean(ifelse(svm_test_fit>= 0.5,1,0)==y_test)#0.5487805
+svm.prob = predict(best_mod,PC_test,type="response")
+svm.prob.pc<-svm.prob
+pred = prediction(svm.prob, y_test)
+acc = mean((pred@predictions[[1]]>0.5) == y_test)
+
+perf = performance(pred,"tpr","fpr")
+auc = performance(pred,"auc")@y.values[[1]] # shows calculated AUC for model
+plot(perf,colorize=FALSE, col="black") # plot ROC curve
+lines(c(0,1),c(0,1),col = "gray", lty = 4 )
+text(0.8,0.2, paste0('AUC=', round(auc,3), '\nACC=', round(acc,3)))
+
+```
+
+nonlinear kernel
+
+
+```{r}
+#polynomial 
+svm_tune <- tune(svm, y ~ ., data = dat,kernel="polynomial",
+                 ranges = list(epsilon = seq(0.1,0.9,0.1), cost = 2^(2:9))
+)
+print(svm_tune)
+plot(svm_tune)
+
+best_mod <- svm_tune$best.model
+best_mod_pred <- as.numeric(predict(best_mod, dat)>=0.5 )
+mean(best_mod_pred==y)
+
+# 0.9604863 accuracy
+svm_test_fit<-predict(best_mod,PC_test)
+mean(ifelse(svm_test_fit>= 0.5,1,0)==y_test)#0.5060976
+
+#radial basis: e( − γ|u − v|2)
+svm_tune <- tune(svm, y ~ ., data = dat,kernel="radial",
+                 ranges = list(gamma= 2^(-7:-6),epsilon = seq(0.1,0.9,0.1), cost = 2^(2:9))
+)
+print(svm_tune)
+#plot(svm_tune)
+
+
+best_mod <- svm_tune$best.model
+best_mod_pred <- as.numeric(predict(best_mod, dat)>=0.5 )
+mean(best_mod_pred==y)
+# 0.9604863 accuracy
+svm_test_fit<-predict(best_mod,PC_test)
+mean(ifelse(svm_test_fit>= 0.5,1,0)==y_test)#0.5487805
+
+```
+
+# Try out LASSO (Up datated version in Lingling's code)
+```{r,eval=FALSE}
+
+#glmmod <- glmnet(expr.pca$x, y=as.factor(y), alpha=1, family="binomial")
+
+# Plot variable coefficients vs. shrinkage parameter lambda.
+#plot(glmmod, xvar="lambda")
+#cv.glmmod <- cv.glmnet(expr.pca$x, y=as.factor(y), alpha=1, family="binomial")
+plot(cv.glmmod)
+best.lambda <- cv.glmmod$lambda.min
+glmmod_best <- glmnet(expr.pca$x, y=as.factor(y), alpha=1, family="binomial",lambda = best.lambda)
+glmmod_best
+#summarize(glmmod_best)
+coef(glmmod_best)
+svm_test_fit<-predict(glmmod_best,PC_test)
+mean(ifelse(svm_test_fit>= 0.5,1,0)==y_test)#0.7134146
+
+```
+
+# SVM on selected pc
+```{r}
+# perform a grid search
+pc_sele_m<-data.matrix(pc_sele)
+
+dat<- dat%>%mutate(y=as.numeric(y))
+dat_sele<-as.data.frame(cbind(y,pc_sele))
+dat_sele<- dat_sele%>%mutate(y=as.numeric(y))
+svm_sele<-svm(y~.,data = dat_sele)
+mean(ifelse(svm_sele$fitted>= 0.5,1,0)==y)#0.89
+
+svm_sele_test<-predict(svm_sele,PC_test)
+mean(ifelse(svm_sele_test>= 0.5,1,0)==y_test)#0.5304878
+```
+
+```{r}
+tab_prob<-data.frame(cbind(svm.prob.lasso,svm.prob.en,svm.prob.pc,lr.pca.prob))
+write.table(tab_prob,"~/Dropbox/6.867project/data/svm_lr_prob.csv",sep=",",row.names = F)
+```
+
+# LASSO weights vs PCA weight
+```{r}
+
+expr_sc<-scale(expr, center = TRUE, scale = TRUE)
+pc_weight<-expr.pca$rotation[1:20041,colnames(expr.pca$rotation)%in%colnames(pc_sele)]
+combined_weight<-pc_weight %*%as.matrix(model_lr$coefficients[-1])
+combined_weight<-as.data.frame(combined_weight)
+combined_weight$gene<-row.names(combined_weight)
+combined_weight$rank<-rank(-abs(combined_weight$V1))
+dat_plot<-combined_weight%>%inner_join(lass,by=c("gene"="name"))
+plot(dat_plot$V1,dat_plot$lasso_coef)
+plot(dat_plot$rank,abs(dat_plot$lasso_coef))
+hist(dat_plot$rank,breaks = 100,xlab = "Weight Rank in PCA",ylab = "Frequency in LASSO Selected Genes",main="Weight Rank in PCA For LASSO Selected Gene")
+```
+
+
+SVM on hidden layer
+
+```{r}
+lass <- read_csv("~/Dropbox/6.867project/data/selected_lass_en_nn.csv")
+nn_intermediate_train <- read_delim("~/Dropbox/6.867project/data/nn_intermediate_train.txt",
+" ", escape_double = FALSE, col_names = FALSE,
+trim_ws = TRUE)
+nn_intermediate_train<-nn_intermediate_train[,lass$X1]
+
+nn_intermediate_test <- read_delim("~/Dropbox/6.867project/data/nn_intermediate_test.txt",
+" ", escape_double = FALSE, col_names = FALSE,
+trim_ws = TRUE)
+nn_intermediate_test<-nn_intermediate_test[,lass$X1]
+
+dat<-as.data.frame(cbind(y,nn_intermediate_train))
+dat<- dat%>%mutate(y=as.numeric(y))
+
+dat_test<-as.data.frame(cbind(bcr_patient_test$y,nn_intermediate_test))
+colnames(dat_test)[1]<-"y"
+dat_test<- dat_test%>%mutate(y=as.numeric(dat_test$y))
+svm_tune <- tune(svm, y ~ ., data = dat,
+                 ranges = list(epsilon = seq(0.1,0.9,0.1), cost = 2^(2:9))
+)
+print(svm_tune)
+plot(svm_tune)
+
+best_mod <- svm_tune$best.model
+best_mod_pred <- as.numeric(predict(best_mod, dat)>=0.5 )
+mean(best_mod_pred==y)
+# 0.9817629 accuracy
+svm_test_fit<-predict(best_mod,dat_test)
+mean(ifelse(svm_test_fit>= 0.5,1,0)==y_test)#0.75
+
+svm.prob = predict(best_mod,dat_test,type="response")
+pred = prediction(svm.prob, bcr_patient_test$y)
+acc = mean((pred@predictions[[1]]>0.5) == bcr_patient_test$y)
+
+perf = performance(pred,"tpr","fpr")
+auc = performance(pred,"auc")@y.values[[1]] # shows calculated AUC for model 0.80
+plot(perf,colorize=FALSE, col="black") # plot ROC curve
+lines(c(0,1),c(0,1),col = "gray", lty = 4 )
+text(0.8,0.2, paste0('AUC=', round(auc,3), '\nACC=', round(acc,3)))
+```
+
+# relu +SVM
+```{r}
+relu_train <- read.table("~/Dropbox/6.867project/data/nn_intermediate_relu_train_selected.txt",header = T)
+relu_train <-relu_train[,-54]
+relu_test <- read.table("~/Dropbox/6.867project/data/nn_intermediate_relu_test_selected.txt",header = T)
+relu_test <-relu_test[,-54]
+dat<-as.data.frame(cbind(y,relu_train))
+dat<- dat%>%mutate(y=as.numeric(y))
+
+dat_test<-as.data.frame(cbind(bcr_patient_test$y,relu_test))
+colnames(dat_test)[1]<-"y"
+dat_test<- dat_test%>%mutate(y=as.numeric(dat_test$y))
+svm_tune <- tune(svm, y ~ ., data = dat,
+                 ranges = list(epsilon = seq(0.1,0.9,0.1), cost = 2^(2:9))
+)
+print(svm_tune)
+plot(svm_tune)
+
+best_mod <- svm_tune$best.model
+best_mod_pred <- as.numeric(predict(best_mod, dat)>=0.5 )
+mean(best_mod_pred==y)
+# 0.9817629 accuracy
+svm_test_fit<-predict(best_mod,dat_test)
+mean(ifelse(svm_test_fit>= 0.5,1,0)==y_test)#0.75
+
+svm.prob = predict(best_mod,dat_test,type="response")
+pred = prediction(svm.prob, bcr_patient_test$y)
+acc = mean((pred@predictions[[1]]>0.5) == bcr_patient_test$y)
+
+perf = performance(pred,"tpr","fpr")
+auc = performance(pred,"auc")@y.values[[1]] # shows calculated AUC for model 0.80
+plot(perf,colorize=FALSE, col="black") # plot ROC curve
+lines(c(0,1),c(0,1),col = "gray", lty = 4 )
+text(0.8,0.2, paste0('AUC=', round(auc,3), '\nACC=', round(acc,3)))
+```
+
